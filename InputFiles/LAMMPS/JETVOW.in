@@ -1,0 +1,108 @@
+log             log.JETVOW_Crystal17_Vesta append
+units           real
+atom_style      full
+boundary        p p p
+
+pair_style 		lj/cut/coul/cut 8.0
+bond_style      harmonic
+angle_style     hybrid cosine/periodic harmonic
+dihedral_style  harmonic
+improper_style  fourier
+
+pair_modify     tail yes mix arithmetic
+special_bonds   lj/coul 0.0 0.0 1.0
+dielectric      1.0
+
+read_data       JETVOW_Crystal17_Vesta.data extra/atom/types 2 extra/bond/types 1 extra/angle/types 1
+
+box tilt        large
+
+molecule 		gas co2.mol toff 4 boff 6 aoff 10
+
+pair_coeff 5 5 0.05564  2.80 		#C of methane Boltzman constant 1.987204 (cal/mol K)
+pair_coeff 6 6 0.1598  3.05	 	#H of methane
+bond_coeff 7 900  1.16		#C-H
+#angle_style harmonic
+angle_coeff 11 harmonic 33.00 180    #H-C-H
+#angle_coeff 11 35.951413 -1 3
+mass 5 12.011
+mass 6 15.999
+pair_modify mix arithmetic
+
+# Neighbor settings
+neighbor        3.0 bin
+neigh_modify    delay 0 every 1 check yes
+
+#Variables
+variable             name string lammpsdata #Define the data input name: lammpsdata lammpsdata
+variable             temp equal 300.0			   	#Define temperature set to 300K
+variable             press equal 1.0				#Define 1 atm preassure
+variable             tcoupl equal 100				#Temperature damping parameter (time units) The damp parameter has to do with how long it takesthe system to go from its current T to the target
+variable             pcoupl equal 5000*${press}		#Pdamp determine the time scale on which pressure is relaxed
+variable             thermFreq equal 1000			#Compute and print thermodynamic info (e.g. temperature, energy, pressure) on timesteps. Output thermodynamics every N timesteps. Ali uses 1000
+variable             runStep equal 5000000    		#Run step 5000000 = 5ns
+variable             dumpFreq equal 10000	        #DumpFreq
+variable             tstep equal 1    				#Timestep in fs
+variable             sampFreq equal 300000	        #Sampling Frequency 0.3ns where there is no correlation between frames
+variable             sampStep equal ${sampFreq}*100  #Run Frequency, it is multiplied by the number of samples
+variable             aveFreq equal 10000  			#Averaging Frequency
+variable             naveFreq equal ${sampStep}/${aveFreq}	#Number of averaging windows
+variable             molecules equal 1				#Number of gas molecules to insert
+
+create_atoms 0 random ${molecules} 12345 NULL overlap 2.5 mol gas 12345
+
+#### Atom Groupings ####
+group           fram     id   1:84
+group 			gas		 type 5 6
+#### END Atom Groupings ####
+
+#fix 			methane_rigid gas rigid/small molecule
+#fix 			rigmstol gas shake 0.0001 20 0 b 7 #a 11
+
+fix             rigidgas gas rigid/nvt molecule temp 300.0 300.0 100.0
+
+fix         	fixedslab fram setforce 0.0 0.0 0.0				#Fix slab positions and forces for slab
+fix             freezeSlab fram rigid single force * off off off torque * off off off
+
+
+#----------------------------Simmulation---------------------------------------------
+
+print "------------ beginning minimization ------------"
+minimize             1.0e-8  1.0e-10 100000000 100000000 		#minimize etol ftol maxiter maxeval. etol = stopping tolerance for energy (unitless) ftol = stopping tolerance for force (force units); maxiter = max iterations of minimizer; maxeval = max number of force/energy evaluationsPerform an energy minimization of the system, by iteratively adjusting atom coordinates.
+write_data		data.${name}_min								#To write data after minimization
+
+# Initial velocity
+velocity gas create ${temp} 343037 rot yes dist gaussian
+
+print "------------ beginning NVT Equilibration E-Field ------------"
+
+fix 				1 gas nvt temp ${temp} ${temp} $(100.0*dt)
+dump                1 all atom ${dumpFreq} dump.${name}_nvt_eq.lammpstrj 
+timestep            ${tstep}										#time = femtoseconds Set the timestep size for subsequent molecular dynamics simulations
+
+variable    		oscillate    equal 0.05
+fix         		efield gas efield 0 0 v_oscillate
+
+run                 2000000				#2,000,000 to equilibrate
+write_data			data.${name}_nvt_eq
+undump 				1
+#unfix              	1
+
+print "------------ beginning NVT Production E-Field ------------"
+
+reset_timestep      0											#Set the timestep counter to the specified value
+timestep            ${tstep}
+
+compute 			myTemp  gas temp
+compute 			myPress  all pressure myTemp
+compute 			dipchunk gas chunk/atom type
+compute 			myChunk gas dipole/chunk dipchunk
+
+thermo 				100000 										#Set the thermo printing freq, 100,000 is the HB life time
+thermo_style    	custom step temp vol etotal pe ke epair ecoul lx ly lz v_oscillate c_myTemp c_myPress #c_myChunk
+thermo_modify   	flush yes
+
+dump                1 all atom ${dumpFreq} dump.${name}_nvt_prod.lammpstrj
+
+run                 3000000				#3,000,000 to equilibrate
+write_data			data.${name}_nvt_prod
